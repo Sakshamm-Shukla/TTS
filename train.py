@@ -69,61 +69,73 @@
 import os
 import torch
 from trainer import Trainer, TrainerArgs
-from TTS.tts.configs.glow_tts_config import GlowTTSConfig
+from TTS.tts.configs.vits_config import VitsConfig  # Note: class name is VitsConfig (lowercase 'i')
 from TTS.tts.configs.shared_configs import BaseDatasetConfig
 from TTS.tts.datasets import load_tts_samples
-from TTS.tts.models.glow_tts import GlowTTS
+from TTS.tts.models.vits import Vits  # Vits model
 from TTS.tts.utils.text.tokenizer import TTSTokenizer
 from TTS.utils.audio import AudioProcessor
+import TTS.tts.datasets.formatters as formatters
 
-# Define the output directory (e.g., current folder or a dedicated training folder)
+# Custom formatter to modify the default LJSpeech behavior:
+# It replaces "wavs" with "wavs_mono" in the audio file paths.
+def custom_ljspeech_formatter(root_path, meta_file_train, **kwargs):
+    # Use the default ljspeech formatter to parse metadata.txt
+    items = formatters.ljspeech(root_path, meta_file_train, **kwargs)
+    # Update the audio file paths: replace "wavs" with "wavs_mono"
+    for item in items:
+        item["audio_file"] = item["audio_file"].replace("wavs", "wavs_mono")
+    return items
+
+# Define the output directory (for example, a folder in the current working directory)
 output_path = os.path.join(os.getcwd(), "output")
 
-# Configure dataset path
+# Configure your dataset.
+# The dataset root is "MyTTSDataset" where metadata.txt resides.
 dataset_config = BaseDatasetConfig(
-    formatter="ljspeech",  
+    formatter="ljspeech",        # We'll override with our custom formatter below.
     meta_file_train="metadata.txt",
-    path="C:/Users/Monika/Desktop/Saras AI/TTS/MyTTSDataset"
+    path="MyTTSDataset"           # metadata.txt is in MyTTSDataset; audio files are in MyTTSDataset/wavs_mono
 )
 
-# Set up GlowTTS training configuration for CPU
-config = GlowTTSConfig(
-    batch_size=4,  # Reduced batch size for CPU training
-    eval_batch_size=2,  # Smaller batch size for evaluation
-    num_loader_workers=2,  # Reduce to prevent CPU overload
-    num_eval_loader_workers=1,  
+# Initialize the training configuration for VITS.
+# Adjust hyperparameters as needed; here we use a lower batch size for Colab.
+config = VitsConfig(
+    batch_size=8,                # Reduced batch size for Colab GPU
+    eval_batch_size=4,
+    num_loader_workers=2,        # Fewer workers to avoid instability on Colab
+    num_eval_loader_workers=1,
     run_eval=True,
     test_delay_epochs=-1,
-    epochs=1000,
+    epochs=1000,                 # Change if you wish to train fewer epochs initially
     text_cleaner="phoneme_cleaners",
     use_phonemes=True,
     phoneme_language="en-us",
     phoneme_cache_path=os.path.join(output_path, "phoneme_cache"),
     print_step=25,
     print_eval=True,
-    mixed_precision=False,  # Disable mixed precision (CPU doesn't support FP16)
+    mixed_precision=True,        # Enable FP16 mixed precision (Colab GPUs support this)
     output_path=output_path,
     datasets=[dataset_config],
 )
 
-# Ensure training runs on CPU
+# Ensure the model runs on GPU if available.
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Training on: {device.upper()} (Expect slow training on CPU)")
+print(f"Training on: {device.upper()}")
 
-# Initialize audio processor
+# Initialize the audio processor (handles feature extraction)
 ap = AudioProcessor.init_from_config(config)
 
-# Initialize tokenizer
+# Initialize the tokenizer (converts text to token IDs)
 tokenizer, config = TTSTokenizer.init_from_config(config)
 
-# Load training and evaluation samples
-train_samples, eval_samples = load_tts_samples(dataset_config, eval_split=True)
+# Load training and evaluation samples using the custom formatter
+train_samples, eval_samples = load_tts_samples(dataset_config, eval_split=True, formatter=custom_ljspeech_formatter)
 
-# Initialize the GlowTTS model
-model = GlowTTS(config, ap, tokenizer, speaker_manager=None)
-model.to(device)  # Ensure the model runs on CPU
+# Initialize the VITS model.
+model = Vits(config, ap, tokenizer, speaker_manager=None)
+model.to(device)
 
-# Start training
 if __name__ == "__main__":
     trainer = Trainer(
         TrainerArgs(),
